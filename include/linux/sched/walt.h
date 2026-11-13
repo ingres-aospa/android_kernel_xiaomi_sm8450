@@ -97,6 +97,8 @@ struct walt_task_struct {
 	u64				active_time;
 	u64				last_win_size;
 	int				boost;
+	int				load_boost;
+	int64_t				boosted_task_load;
 	bool				wake_up_idle;
 	bool				misfit;
 	bool				rtg_high_prio;

@@ -209,7 +209,9 @@ enum {
 	PER_TASK_BOOST_PERIOD_MS,
 	LOW_LATENCY,
 	PIPELINE,
+	LOAD_BOOST,
 };
+
 
 static int sched_task_handler(struct ctl_table *table, int write,
 				void __user *buffer, size_t *lenp,
@@ -229,6 +231,8 @@ static int sched_task_handler(struct ctl_table *table, int write,
 
 	mutex_lock(&sysctl_pid_mutex);
 
+	param = (unsigned long)table->data;
+
 	if (!write) {
 		task = get_pid_task(find_vpid(sysctl_task_read_pid),
 				PIDTYPE_PID);
@@ -236,9 +240,11 @@ static int sched_task_handler(struct ctl_table *table, int write,
 			ret = -ENOENT;
 			goto unlock_mutex;
 		}
+
 		wts = (struct walt_task_struct *) task->android_vendor_data1;
 		pid_and_val[0] = sysctl_task_read_pid;
 		param = (unsigned long)table->data;
+
 		switch (param) {
 		case WAKE_UP_IDLE:
 			pid_and_val[1] = wts->wake_up_idle;
@@ -265,10 +271,14 @@ static int sched_task_handler(struct ctl_table *table, int write,
 			pid_and_val[1] = wts->low_latency &
 					 WALT_LOW_LATENCY_PIPELINE;
 			break;
+		case LOAD_BOOST:
+			pid_and_val[1] = wts->load_boost;
+			break;
 		default:
 			ret = -EINVAL;
 			goto put_task;
 		}
+
 		ret = proc_dointvec(&tmp, write, buffer, lenp, ppos);
 		goto put_task;
 	}
@@ -277,7 +287,8 @@ static int sched_task_handler(struct ctl_table *table, int write,
 	if (ret)
 		goto unlock_mutex;
 
-	if (pid_and_val[0] <= 0 || pid_and_val[1] < 0) {
+	if (pid_and_val[0] <= 0 ||
+	    (pid_and_val[1] < 0 && param != LOAD_BOOST)) {
 		ret = -ENOENT;
 		goto unlock_mutex;
 	}
@@ -288,15 +299,17 @@ static int sched_task_handler(struct ctl_table *table, int write,
 		ret = -ENOENT;
 		goto unlock_mutex;
 	}
+
 	wts = (struct walt_task_struct *) task->android_vendor_data1;
-	param = (unsigned long)table->data;
 	val = pid_and_val[1];
+	param = (unsigned long)table->data;
+
 	switch (param) {
 	case WAKE_UP_IDLE:
 		wts->wake_up_idle = val;
 		break;
 	case INIT_TASK_LOAD:
-		if (pid_and_val[1] < 0 || pid_and_val[1] > 100) {
+		if (val < 0 || val > 100) {
 			ret = -EINVAL;
 			goto put_task;
 		}
@@ -335,8 +348,23 @@ static int sched_task_handler(struct ctl_table *table, int write,
 		else
 			wts->low_latency &= ~WALT_LOW_LATENCY_PIPELINE;
 		break;
+	case LOAD_BOOST:
+		if (val < -90 || val > 90) {
+			ret = -EINVAL;
+			goto put_task;
+		}
+
+		wts->load_boost = val;
+
+		if (val)
+			wts->boosted_task_load =
+				mult_frac((int64_t)1024, (int64_t)val, 100);
+		else
+			wts->boosted_task_load = 0;
+		break;
 	default:
 		ret = -EINVAL;
+		break;
 	}
 
 put_task:
@@ -859,6 +887,13 @@ struct ctl_table walt_table[] = {
 	{
 		.procname	= "sched_pipeline",
 		.data		= (int *) PIPELINE,
+		.maxlen		= sizeof(unsigned int) * 2,
+		.mode		= 0644,
+		.proc_handler	= sched_task_handler,
+	},
+	{
+		.procname	= "task_load_boost",
+		.data		= (int *) LOAD_BOOST,
 		.maxlen		= sizeof(unsigned int) * 2,
 		.mode		= 0644,
 		.proc_handler	= sched_task_handler,
